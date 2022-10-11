@@ -1,0 +1,16 @@
+version=0.1
+
+[default.build.parameters]
+beta_features = true
+
+[default.sync.parameters]
+beta_features = true
+
+[default.global.parameters]
+stack_name = "bank-app"
+region = "us-east-1"
+
+[default.deploy.parameters]
+fail_on_empty_changeset = "false"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
