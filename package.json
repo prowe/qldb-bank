@@ -7,7 +7,9 @@
   "author": "SAM CLI",
   "license": "MIT",
   "dependencies": {
-    "esbuild": "^0.14.14"
+    "apollo-server-lambda": "^3.10.3",
+    "esbuild": "^0.14.14",
+    "graphql": "^16.6.0"
   },
   "scripts": {
     "unit": "jest",
