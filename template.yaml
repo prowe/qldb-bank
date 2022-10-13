@@ -31,6 +31,23 @@ Resources:
           Properties:
             Path: /graphql
             Method: ANY
+      Policies:
+        - Version: '2012-10-17' 
+          Statement:
+            - Effect: Allow
+              Action:
+                - "qldb:SendCommand"
+              Resource: !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${Ledger}"
+            - Effect: Allow
+              Action:
+                - "qldb:PartiQLDelete"
+                - "qldb:PartiQLInsert"
+                - "qldb:PartiQLUpdate"
+                - "qldb:PartiQLSelect"
+                - "qldb:PartiQLHistoryFunction"
+              Resource:
+                - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${Ledger}/table/*"
+                - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${Ledger}/information_schema/user_tables"
     Metadata: # Manage esbuild properties
       BuildMethod: esbuild
       BuildProperties:

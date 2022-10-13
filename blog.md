@@ -174,3 +174,220 @@ A couple strategies come to mind to resolve this:
 1. We could use some sort of "migration framework" like Flyway to run the SQL to manage the schema. This is awkward because QLDB isn't a relational database with a JDBC driver that can be dropped in.
 1. A Cloudformation custom resource is a possible solution, they are a pain to setup though and hard to troubleshoot when they don't work.
 1. Maybe create a Cloudformation extension. This is also pretty heavyweight.
+
+To keep this project moving forward, I am going to punt on this problem and just manually run these queries via the console. 
+I'll log into to the AWS console and run the following queries:
+```sql
+CREATE TABLE Transactions;
+CREATE INDEX ON Transactions (accountNumber);
+```
+
+Next, we need to create a connection to the Ledger from our Lambda.
+It would have been nice for the AWS SDK to support this but instead we have to download a QLDB specific library.
+Following the instructions on [this NodeJS example documentation](https://docs.aws.amazon.com/qldb/latest/developerguide/driver-quickstart-nodejs.html#driver-quickstart-nodejs.step-1) I installed the following libraries:
+```bash
+npm install --save amazon-qldb-driver-nodejs @aws-sdk/client-qldb-session @aws-sdk/client-qldb ion-js jsbi
+```
+
+I'll create a factory function to get a connection to the Ledger:
+```Typescript
+import { QldbDriver } from "amazon-qldb-driver-nodejs";
+//...
+function createDriver(): QldbDriver {
+    const ledgerName = process.env['LEDGER_NAME'];
+    if (!ledgerName) {
+        throw new Error('LEDGER_NAME not set');
+    }
+    return new QldbDriver(ledgerName);
+}
+```
+
+Since the default permissions for the Lambda function are very restrictive, we need to grant it the ability to mange the `Transaction` table.
+It is pretty easy to set this up with SAM by adding a `Polcies` key to our function:
+```yaml
+Policies:
+  - Version: '2012-10-17' 
+    Statement:
+      - Effect: Allow
+        Action:
+          - "qldb:SendCommand"
+        Resource: !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${Ledger}"
+      - Effect: Allow
+        Action:
+          - "qldb:PartiQLDelete"
+          - "qldb:PartiQLInsert"
+          - "qldb:PartiQLUpdate"
+          - "qldb:PartiQLSelect"
+          - "qldb:PartiQLHistoryFunction"
+        Resource:
+          - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${Ledger}/table/*"
+          - !Sub "arn:aws:qldb:${AWS::Region}:${AWS::AccountId}:ledger/${Ledger}/information_schema/user_tables"
+```
+
+With the access granted and the Ledger and table created, I can add some code to our GraphQL resolver to insert a row into the table:
+```Typescript
+async logTransaction(_source: unknown, args: any) {
+  const {accountNumber, amount, description} = args;
+  const now = new Date();
+  const tx: BankTransaction = {
+    // There is a bug in the Timestamp class with millisecons != 0
+    timestamp: new Timestamp(
+        now.getTimezoneOffset() * -1,
+        now.getFullYear(),
+        now.getMonth() + 1,
+        now.getDate(),
+        now.getHours(),
+        now.getMinutes(),
+        new Decimal(now.getSeconds() * 1000 + now.getMilliseconds(), -3)
+    ),
+    accountNumber,
+    amount: new Decimal(amount * 100, -2),
+    description
+  };
+
+  const driver = createDriver();
+  try {
+    await driver.executeLambda(dbTx => dbTx.execute('INSERT INTO Transactions ?', tx));
+  } finally {
+    driver.close();
+  }
+
+  return tx;
+}
+```
+
+If we open up the endpoint in our browser, we should be able to submit a GraphQL request like the below and get some results back:
+```GraphQL
+mutation {
+  logTransaction(accountNumber: "0001", amount: 45.0, description: "Inital Balance") {
+    accountNumber
+    timestamp
+    amount
+    description
+  }
+}
+```
+
+We can then pull up the QLDB console and confirm this transaction exists by running this query:
+```sql
+select *
+from Transactions;
+```
+
+It would be nice to be able to pull up these transactions via the API.
+We can support this by adding an Account type and corrisponding declarations to our GraphQL schema:
+```GraphQL
+type Account {
+  accountNumber: String!
+  transactions: [Transaction!]!
+}
+
+type Query {
+  account(accountNumber: String!): Account!
+}
+```
+
+The resolvers will return an empty shell for the `Account` and implement a query to get all the `Transaction` records:
+```Typescript
+Query: {
+  account(_source: unknown, {accountNumber}: {accountNumber: String}) {
+      return {
+          accountNumber
+      }
+  }
+},
+Account: {
+  async transactions({accountNumber}: {accountNumber: String}) {
+      const driver = createDriver();
+      try {
+          const result = await driver.executeLambda(dbTx => dbTx.execute('SELECT * FROM Transactions where accountNumber = ?', accountNumber));
+          return result.getResultList().map((row): BankTransaction => {
+              return {
+                  timestamp: row.get('timestamp')!.timestampValue()!,
+                  accountNumber: row.get('accountNumber')!.stringValue()!,
+                  amount: row.get('amount')!.decimalValue()!,
+                  description: row.get('description')!.stringValue()!,
+              }
+          });
+      } finally {
+          driver.close();
+      }
+  }
+},
+```
+
+Having to do that conversion from the Ion types to native JS types is pretty annoying.
+
+
+Finally, let's implement one last feature.
+We can utilize the transactions in QLDB to support transfer between accounts.
+Start with the GraphQL:
+```GraphQL:
+type Transfer {
+  debit: Transaction!
+  credit: Transaction!
+}
+
+type Mutation {
+  #...
+  transfer(fromAccount: String!, toAccount: String!, amount: Float!, description: String!): Transfer!
+}
+```
+
+I'm going to pull out the creation of a `BankTransaction` into a helper function since the timestamp issue makes it a pain to construct:
+```Typescript
+function createTransaction(accountNumber: String, amount: number, description: String): BankTransaction {
+    const now = new Date();
+    return {
+        // There is a bug in the Timestamp class with millisecons != 0
+        timestamp: new Timestamp(
+            now.getTimezoneOffset() * -1,
+            now.getFullYear(),
+            now.getMonth() + 1,
+            now.getDate(),
+            now.getHours(),
+            now.getMinutes(),
+            new Decimal(now.getSeconds() * 1000 + now.getMilliseconds(), -3)
+        ),
+        accountNumber,
+        amount: new Decimal(amount * 100, -2),
+        description
+    };
+}
+```
+
+Since the `executeLambda` function supports taking a list for multiple inserts, we can send through a list of transactions to put them in all at once:
+```Typescript
+async transfer(_source: unknown, args: any) {
+    const {fromAccount, toAccount, amount, description} = args;
+    const debit = createTransaction(fromAccount, amount * -1, description);
+    const credit = createTransaction(toAccount, amount, description);
+
+    const driver = createDriver();
+    try {
+        await driver.executeLambda(dbTx => dbTx.execute('INSERT INTO Transactions ?', [debit, credit]));
+    } finally {
+        driver.close();
+    }
+    
+    return {
+        debit,
+        credit
+    };
+}
+```
+
+Awesome! Time to give some money to an account:
+```GraphQL
+mutation {
+  transfer(fromAccount: "0001", toAccount: "0002", amount: 20, description: "Happy Birthday") {
+    debit {
+      amount
+    }
+    credit {
+      amount
+    }
+  }
+}
+```
+
