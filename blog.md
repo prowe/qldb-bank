@@ -1,9 +1,11 @@
-## Let's Build a Bank
+# Let's Build a Bank
 
-Over the weekend I was listending to a recent episode of Software Engineering Daily titled ["Twisp: Reinventing the Ledger"](https://softwareengineeringdaily.com/2022/10/07/twisp-reinventing-the-ledger/).
-In that podcast they discuss the complexities of building an accounting ledger system, especially at scale.
+Over the weekend I was listening to a recent episode of Software Engineering Daily titled ["Twisp: Reinventing the Ledger"](https://softwareengineeringdaily.com/2022/10/07/twisp-reinventing-the-ledger/).
+In that episode they discuss the complexities of building an accounting ledger system, especially at scale.
 Late in the podcast, the host asks what other software is out there in this space, and the [Quantam Ledger Database from AWS]() was mentioned.
 Since I have never use it, I thought it might be fund to build a simple bank on this platform.
+
+## Creating an API Layer
 
 I am going to start by setting up an API.
 I want to use GraphQL and run this serverless, so I am going to use the [Apollo Server Lambda](https://www.npmjs.com/package/apollo-server-lambda) NodeJS package.
@@ -44,7 +46,7 @@ Once this completes, I am going to gut the project and swap out everything into 
     ```bash
     mv hello-world/* .
     ```
-1. I'm not sure what the testing strategy is going to be for this app yet, but I will probably use Vitest over Jest. 
+1. I'm not sure what the testing strategy is going to be for this app yet, but I will probably use [Vitest](https://vitest.dev) over Jest. 
     So I am going to delete all the testing related artifacts.
     ```bash
     rm -rf unit jest.config.ts
@@ -54,6 +56,8 @@ Once this completes, I am going to gut the project and swap out everything into 
     ```bash
     sam build && sam deploy
     ```
+
+## Using GraphQL
 
 Now, I am going to head over to the [apollo-server-lambda page](https://www.npmjs.com/package/apollo-server-lambda) and bend our app to fit its instructions.
 1. Need to install the library
@@ -144,6 +148,8 @@ Mutation: {
   }
 }
 ```
+
+## The Quantam Ledger Database Service
 
 This isn't very useful yet.
 What is needed is a place to store these transactions. 
@@ -274,6 +280,8 @@ select *
 from Transactions;
 ```
 
+## Viewing Previous Transactions
+
 It would be nice to be able to pull up these transactions via the API.
 We can support this by adding an Account type and corrisponding declarations to our GraphQL schema:
 ```GraphQL
@@ -318,6 +326,7 @@ Account: {
 
 Having to do that conversion from the Ion types to native JS types is pretty annoying.
 
+## Supporting Transfers
 
 Finally, let's implement one last feature.
 We can utilize the transactions in QLDB to support transfer between accounts.
@@ -391,3 +400,19 @@ mutation {
 }
 ```
 
+## Conclusion
+
+Why would we use this particular database over alternitives like DynamoDB or relational databases like Postgres?
+The main benefit of using QLDB is that every transaction is verified on a ledger that we, as AWS customers, cannot modify.
+What this means is that if a record hits the database, it can never be truely deleted. 
+It can be updated, but the history is maintained forever and can be validated cryptographically.
+
+It is a cool service. 
+I like how easy it is to setup and the serverless, pay as you go, is always appreciated.
+There are a couple sore points that should be considered before going all-in on this service:
+1. There is no built in Cloudformation support for creating Tables and Indexes.
+1. Indexes can currently only target a single field and can only be used for equality matches. 
+  This is even more restrictive than DyanamoDB that allows a HASH and RANGE keys.
+1. The library for querying data doesn't provide a `toObject` feature that can convert an Ion structure to the equilvilent JavaScript. Converting manually can be a lot boilerplate.
+
+To see the complete example, check out [this GitHub repo](https://github.com/prowe/qldb-bank)
